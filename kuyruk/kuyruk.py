@@ -68,7 +68,12 @@ class Kuyruk:
         try:
             yield conn
         finally:
-            conn.close()
+            try:
+                conn.close()
+            except Exception as e:
+                # Closing a dead connection fails too (e.g. ETIMEDOUT). Do not let it
+                # replace the original error, which the worker handles by reconnecting.
+                logger.warning("Cannot close RabbitMQ connection: %s", e)
 
     @contextmanager
     def channel(self) -> Iterator[amqp.Channel]:
