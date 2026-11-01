@@ -9,6 +9,7 @@ from kuyruk import signals
 from kuyruk.config import Config
 from kuyruk.task import Task, SubTask
 from kuyruk.connection import SingleConnection
+from kuyruk.exceptions import HeartbeatError
 
 logger = logging.getLogger(__name__)
 
@@ -67,13 +68,15 @@ class Kuyruk:
         conn: amqp.Connection = self._new_connection().new_connection()
         try:
             yield conn
-        finally:
-            try:
-                conn.close()
-            except Exception as e:
-                # Closing a dead connection fails too (e.g. ETIMEDOUT). Do not let it
-                # replace the original error, which the worker handles by reconnecting.
-                logger.warning("Cannot close RabbitMQ connection: %s", e)
+        except (amqp.exceptions.ConnectionError, OSError, HeartbeatError):
+            # Connection is dead. Close handshake would block until timeout and its error would mask the original.
+            conn.collect()
+            raise
+        except BaseException:
+            conn.close()
+            raise
+        else:
+            conn.close()
 
     @contextmanager
     def channel(self) -> Iterator[amqp.Channel]:
