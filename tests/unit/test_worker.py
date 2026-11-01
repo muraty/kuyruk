@@ -28,6 +28,14 @@ class Args:
             setattr(self, k, v)
 
 
+def _fake_connection(heartbeat_tick=None):
+    conn = MagicMock(spec=amqp.Connection)
+    ch = conn.channel.return_value
+    ch.connection = conn
+    conn.heartbeat_tick.side_effect = heartbeat_tick
+    return conn
+
+
 class WorkerTestCase(unittest.TestCase):
 
     def test_default_queue(self):
@@ -66,21 +74,29 @@ class WorkerTestCase(unittest.TestCase):
         k.config.WORKER_RECONNECT_INTERVAL = 0
         w = Worker(k, Args())
 
-        def fake_connection(heartbeat_tick):
-            conn = MagicMock(spec=amqp.Connection)
-            ch = conn.channel.return_value
-            ch.connection = conn
-            conn.heartbeat_tick.side_effect = heartbeat_tick
-            return conn
-
         def missed_heartbeats():
             raise amqp.exceptions.ConnectionForced('Too many heartbeats missed')
 
-        dead = fake_connection(missed_heartbeats)
+        dead = _fake_connection(missed_heartbeats)
         dead.close.side_effect = TimeoutError(errno.ETIMEDOUT, 'Connection timed out')
-        healthy = fake_connection(lambda: w.shutdown_pending.set())
+        healthy = _fake_connection(lambda: w.shutdown_pending.set())
 
         with patch.object(SingleConnection, 'new_connection', side_effect=[dead, healthy]):
+            w.run()
+
+        healthy.close.assert_called_once()
+
+    def test_reconnect_when_server_closes_connection(self):
+        """Worker reconnects when the server drops the TCP connection without AMQP close"""
+        k = Kuyruk()
+        k.config.WORKER_RECONNECT_INTERVAL = 0
+        w = Worker(k, Args())
+
+        dropped = _fake_connection()
+        dropped.drain_events.side_effect = OSError('Server unexpectedly closed connection')
+        healthy = _fake_connection(lambda: w.shutdown_pending.set())
+
+        with patch.object(SingleConnection, 'new_connection', side_effect=[dropped, healthy]):
             w.run()
 
         healthy.close.assert_called_once()

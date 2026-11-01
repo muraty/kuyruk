@@ -119,7 +119,7 @@ class Worker:
                     break
                 except HeartbeatError:
                     logger.error("Heartbeat error")
-                except (ConnectionError, amqp.exceptions.ConnectionError) as e:
+                except (OSError, amqp.exceptions.ConnectionError) as e:
                     logger.error("Connection error: %s", e)
                     traceback.print_exc()
 
