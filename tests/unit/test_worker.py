@@ -1,11 +1,16 @@
+import errno
 import signal
 import socket
 import logging
 import unittest
 import multiprocessing
+from unittest.mock import MagicMock, patch
+
+import amqp
 
 from kuyruk import Kuyruk
 from kuyruk import Worker
+from kuyruk.connection import SingleConnection
 from kuyruk.exceptions import HeartbeatError
 
 
@@ -54,3 +59,28 @@ class WorkerTestCase(unittest.TestCase):
         w = Worker(k, Args())
         with self.assertRaises(HeartbeatError):
             w._handle_sighup(signal.SIGHUP, None)
+
+    def test_reconnect_when_closing_dead_connection_fails(self):
+        """Worker reconnects when closing a dead connection fails with ETIMEDOUT"""
+        k = Kuyruk()
+        k.config.WORKER_RECONNECT_INTERVAL = 0
+        w = Worker(k, Args())
+
+        def fake_connection(heartbeat_tick):
+            conn = MagicMock(spec=amqp.Connection)
+            ch = conn.channel.return_value
+            ch.connection = conn
+            conn.heartbeat_tick.side_effect = heartbeat_tick
+            return conn
+
+        def missed_heartbeats():
+            raise amqp.exceptions.ConnectionForced('Too many heartbeats missed')
+
+        dead = fake_connection(missed_heartbeats)
+        dead.close.side_effect = TimeoutError(errno.ETIMEDOUT, 'Connection timed out')
+        healthy = fake_connection(lambda: w.shutdown_pending.set())
+
+        with patch.object(SingleConnection, 'new_connection', side_effect=[dead, healthy]):
+            w.run()
+
+        healthy.close.assert_called_once()

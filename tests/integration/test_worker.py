@@ -28,6 +28,39 @@ def test_heartbeat_error(rabbitmq):
         worker.expect('seconds before reconnecting')
 
 
+def test_reconnect_after_broker_stops_responding(rabbitmq):
+    """Worker reconnects when the broker stops responding and closing the dead connection fails"""
+    delete_queue('kuyruk')
+    with run_worker(app='tests.integration.short_heartbeat.kuyruk') as worker:
+        worker.expect('Consumer started')
+        _pause_until_reconnecting(rabbitmq, worker, 'Too many heartbeats missed')
+        worker.expect('Consumer started', timeout=15)
+        # Broker can be slow to answer the graceful close right after it is unpaused.
+        worker.timeout = 15
+
+
+def test_reconnect_after_broker_stops_responding_during_task(rabbitmq):
+    """Worker reconnects when the broker stops responding while a task is running"""
+    delete_queue('kuyruk')
+    tasks.just_sleep(8)
+    with run_worker(app='tests.integration.short_heartbeat.kuyruk') as worker:
+        worker.expect('sleeping 8 seconds')
+        _pause_until_reconnecting(rabbitmq, worker, 'Heartbeat error')
+        worker.expect('Consumer started', timeout=15)
+        # Unacked task is redelivered after reconnect and must finish before shutdown.
+        worker.timeout = 30
+
+
+def _pause_until_reconnecting(rabbitmq, worker, error):
+    container = rabbitmq.get_wrapped_container()
+    container.pause()
+    try:
+        worker.expect(error, timeout=15)
+        worker.expect('seconds before reconnecting', timeout=15)
+    finally:
+        container.unpause()
+
+
 class WorkerTestCase(unittest.TestCase):
     """
     Tests here are mostly integration tests. They require a running
